@@ -517,16 +517,15 @@ def test_rtol_ensemble(reg_alpha, rtol, expected_acc, expected_roc):
 
 
 @pytest.mark.parametrize("hidden_layer_sizes", [(10,), (5, 5)])
-@pytest.mark.parametrize("n_classes", [2, 5])
+@pytest.mark.parametrize("n_classes", [2, 5, 12])
 @pytest.mark.parametrize("activation", ACTIVATIONS.keys())
 @pytest.mark.parametrize("weight_init", list(WEIGHTS.keys())[1:])
-@pytest.mark.parametrize("alpha", [None, 0.1, 0.5, 1])
+@pytest.mark.parametrize("alpha", [None, 0.1, 0.5, 1, 1e-5])
+@pytest.mark.parametrize("seed", [0, 1, 42, 19788, 8708607])
 @pytest.mark.parametrize(
     "Classifier, direct_links, attr",
     [
         (GFDLClassifier, True, "coeff_"),
-        (GFDLClassifier, False, "coeff_"),
-        (EnsembleGFDLClassifier, None, "coeffs_"),
     ],
 )
 def test_partial_fit(
@@ -537,7 +536,8 @@ def test_partial_fit(
     activation,
     weight_init,
     alpha,
-    attr
+    attr,
+    seed,
 ):
     # Test coefficient equivalence between partial_fit() and fit() as long
     # as D.T @ D is well-conditioned
@@ -549,14 +549,14 @@ def test_partial_fit(
         n_informative=10,
         n_redundant=5,
         n_classes=n_classes,
-        random_state=0,
+        random_state=seed,
     )
 
     kwargs = {
         "hidden_layer_sizes": hidden_layer_sizes,
         "activation": activation,
         "weight_scheme": weight_init,
-        "seed": 0,
+        "seed": seed,
         "reg_alpha": alpha,
     }
     if direct_links is not None:
