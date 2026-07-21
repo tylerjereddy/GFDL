@@ -21,6 +21,7 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 
 from gfdl.activations import resolve_activation
 from gfdl.weights import resolve_weight
+np.set_printoptions(precision=8, floatmode='fixed', suppress=True, threshold=np.inf)
 
 
 class GFDL(BaseEstimator):
@@ -614,7 +615,13 @@ class EnsembleGFDL(BaseEstimator):
             # If reg_alpha is None, use direct solve using
             # MoorePenrose Pseudo-Inverse, otherwise use ridge regularized form.
             if self.reg_alpha is None:
+                #condition_number = np.linalg.cond(D)
+                #print(f"{condition_number=} (before full fit pinv)")
+                print(f"{D=} before full pinv")
+                pinv_res = np.linalg.pinv(D, rtol=self.rtol)
+                print(f"full fit output of pinv: {pinv_res}")
                 coeff = np.linalg.pinv(D, rtol=self.rtol) @ Y
+                print(f"full fit output of coef: {coeff}")
             else:
                 ridge = Ridge(alpha=self.reg_alpha, fit_intercept=False)
                 ridge.fit(D, Y)
@@ -677,7 +684,9 @@ class EnsembleGFDL(BaseEstimator):
                 self.As.append(np.zeros((D.shape[1], D.shape[1])))
                 self.Bs.append(np.zeros((D.shape[1], Y.shape[1])))
 
+            print(f"{i=}, D before original partial mul: {D}")
             self.As[i] += D.T @ D
+            print(f"{i=}, self.As[i] from original partial mul: {self.As[i]}")
             self.Bs[i] += D.T @ Y
 
             # beta shape: (sum_hidden+n_features, n_classes-1)
@@ -700,7 +709,13 @@ class EnsembleGFDL(BaseEstimator):
             # = (D.T @ D)^-1 @ D.T @ y
 
             if self.reg_alpha is None:
+                #condition_number = np.linalg.cond(self.As[i])
+                #print(f"{condition_number=} (before partial fit pinv)")
+                print(f"{self.As[i]=} before partial pinv")
+                pinv_res = np.linalg.pinv(self.As[i], rtol=self.rtol)
+                print(f"partial fit output of pinv: {pinv_res}")
                 coef_ = np.linalg.pinv(self.As[i], rtol=self.rtol) @ self.Bs[i]
+                print(f"partial fit output of coef_: {coef_}")
             else:
                 # scipy.linalg.solve(self.A + reg_mat, self.B)
                 # is equivalent to
