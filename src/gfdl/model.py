@@ -614,6 +614,8 @@ class EnsembleGFDL(BaseEstimator):
             # If reg_alpha is None, use direct solve using
             # MoorePenrose Pseudo-Inverse, otherwise use ridge regularized form.
             if self.reg_alpha is None:
+                condition_number = np.linalg.cond(D)
+                print(f"{condition_number=} (before full fit pinv)")
                 coeff = np.linalg.pinv(D, rtol=self.rtol) @ Y
             else:
                 ridge = Ridge(alpha=self.reg_alpha, fit_intercept=False)
@@ -700,6 +702,8 @@ class EnsembleGFDL(BaseEstimator):
             # = (D.T @ D)^-1 @ D.T @ y
 
             if self.reg_alpha is None:
+                condition_number = np.linalg.cond(self.As[i])
+                print(f"{condition_number=} (before partial fit pinv)")
                 coef_ = np.linalg.pinv(self.As[i], rtol=self.rtol) @ self.Bs[i]
             else:
                 # scipy.linalg.solve(self.A + reg_mat, self.B)
