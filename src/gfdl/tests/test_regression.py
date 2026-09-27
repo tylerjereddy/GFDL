@@ -212,8 +212,8 @@ def test_partial_fit_boston(reg_alpha, expected):
             direct_links=1,
             seed=0,
             reg_alpha=reg_alpha,
-            rtol=1e-6,  # when rtol is squared (1e-3 -> 1e-6)
-                        # we achieve similar results as full fit
+            rtol=1e-3,  # same rtol as full fit, since partial_fit
+                        # does not square the condition number
         )
     batch = 100
     for start in range(0, len(X_train_s), batch):

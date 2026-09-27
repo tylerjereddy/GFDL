@@ -610,22 +610,22 @@ def test_partial_fit(
         # NOTE: for Moore-Penrose, a large singular value
         # cutoff (rcond) or alpha regularization is required
         # to achieve reasonable accuracy
-        # Without rtol or reg accuracy ~= 0.7632
+        # Without rtol or reg accuracy ~= 0.5263
         # With reg accuracy ~= 0.9649
         # With rtol accuracy ~= 0.9474
         (GFDLClassifier, 5, None, 0.9649122807017544),
-        (GFDLClassifier, None, None, 0.7631578947368421),
+        (GFDLClassifier, None, None, 0.5263157894736842),
         (GFDLClassifier, None, 1e-3, 0.9473684210526315),
 
         # NOTE: for Moore-Penrose, a large singular value
         # cutoff (rcond) or alpha regularization is required
         # to achieve reasonable accuracy
-        # Without rtol or reg accuracy ~= 0.7456
+        # Without rtol or reg accuracy ~= 0.6140
         # With reg accuracy ~= 0.9737
-        # With rtol accuracy ~= 0.9561
+        # With rtol accuracy ~= 0.9737
         (EnsembleGFDLClassifier, 5, None, 0.9736842105263158),
-        (EnsembleGFDLClassifier, None, None, 0.7456140350877193),
-        (EnsembleGFDLClassifier, None, 1e-3, 0.956140350877193),
+        (EnsembleGFDLClassifier, None, None, 0.6140350877192983),
+        (EnsembleGFDLClassifier, None, 1e-3, 0.9736842105263158),
         # NOTE: this behavior may be exacerbated by using shallower,
         # wider networks
         # With this dataset in particular we're achieving better accuracies

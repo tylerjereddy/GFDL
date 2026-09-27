@@ -119,19 +119,22 @@ class GFDL(BaseEstimator):
         # Least squares solution:
         # pinv(D) @ y = (D.T @ D)^-1 @ D.T @ y
         #
-        # We're persisting the gram (D.T @ D) and moment (D.T @ y) matrices
-        # and updating them by adding the gram and moment matrices of
-        # each consecutive batch.
+        # Rather than persisting the gram matrix (D.T @ D), which squares the
+        # condition number of D, we persist the triangular factor R of a QR
+        # decomposition of the design matrix seen so far (D = Q @ R), along
+        # with Q.T @ y.
         #
-        # Consider the summation representation of matrix multiplication:
-        # (B.T @ B)_ij = sum_k (B.T_ik @ B_kj)
+        # Suppose the full design matrix is formed by vertically stacking
+        # two batches, written as [D_1 ; D_2], and D_1 = Q_1 @ R_1. Then
+        # [D_1 ; D_2] = blkdiag(Q_1, I) @ [R_1 ; D_2], so a QR decomposition
+        # of the (small) stacked matrix [R_1 ; D_2] = Q_2 @ R_2 gives the
+        # updated factor R_2, and Q.T @ y is updated the same way:
+        # Q_2.T @ [Q_1.T @ y_1 ; y_2]
         #
-        # Now suppose the full design matrix is formed by vertically stacking
-        # two batches, written as [B_1 | B_2]:
-        # [B_1 | B_2].T @ [B_1 | B_2] = B_1.T @ B_1 + B_2.T @ B_2
-        #
-        # It's evident that it is indeed possible to update normal equations
-        # through summation
+        # Because Q has orthonormal columns, pinv(D) = pinv(R) @ Q.T, so
+        # pinv(R) @ (Q.T @ y) is the same least squares solution as full
+        # fit, and R has the same singular values as D (so rtol has the same
+        # meaning in fit and partial_fit). Also, D.T @ D = R.T @ R.
 
         if self.reg_alpha is not None and self.reg_alpha < 0.0:
             raise ValueError("Negative reg_alpha. Expected range : None or [0.0, inf).")
@@ -187,12 +190,12 @@ class GFDL(BaseEstimator):
             Hs.append(X)
         D = np.hstack(Hs)
 
-        if not hasattr(self, "A"):
-            self.A = np.zeros((D.shape[1], D.shape[1]))
-            self.B = np.zeros((D.shape[1], y.shape[1]))
+        if not hasattr(self, "R"):
+            self.R = np.zeros((0, D.shape[1]))
+            self.QtY = np.zeros((0, y.shape[1]))
 
-        self.A += D.T @ D
-        self.B += D.T @ y
+        Q, self.R = np.linalg.qr(np.vstack((self.R, D)))
+        self.QtY = Q.T @ np.vstack((self.QtY, y))
 
         # beta shape: (sum_hidden+n_features, n_classes-1)
         # or (sum_hidden, n_classes-1)
@@ -200,29 +203,19 @@ class GFDL(BaseEstimator):
         # If reg_alpha is None, use direct solve using
         # MoorePenrose Pseudo-Inverse, otherwise use ridge regression.
 
-        # A = D.T @ D
-        # B = D.T @ y
-        # pinv(D) @ y = pinv(A)@B:
-        # pinv(D) @ y = (D.T @ D)^-1 @ D.T @ y
-
-        # pinv(A) @ B = pinv(D.T @ D) @ D.T @ y
-
-        # pinv(D.T @ D) @ D.T @ y = ((D.T @ D).T @ (D.T @ D))^-1 @ (D.T @ D).T @ D.T @ y
-        # = ((D.T @ D) @ (D.T @ D))^-1 @ (D.T @ D) @ D.T @ y
-        # = (D.T @ D)^-1 @ (D.T @ D)^-1 @ (D.T @ D) @ D.T @ y
-        # = (D.T @ D)^-1 @ D.T @ y
-
         if self.reg_alpha is None:
-            self.coeff_ = np.linalg.pinv(self.A, rtol=self.rtol) @ self.B
+            self.coeff_ = np.linalg.pinv(self.R, rtol=self.rtol) @ self.QtY
         else:
-            # scipy.linalg.solve(self.A + reg_mat, self.B)
-            # is equivalent to
+            # scipy.linalg.solve(A + reg_mat, B), with A = D.T @ D
+            # and B = D.T @ y, is equivalent to
             # ridge = Ridge(
             #   alpha=self.reg_alpha, fit_intercept=False, solver='cholesky'
             #   )
             # ridge.fit(D_all[:current_batch], Y_all[:current_batch])
-            reg_mat = np.eye(self.A.shape[0]) * self.reg_alpha
-            self.coeff_ = scipy.linalg.solve(self.A + reg_mat, self.B)
+            reg_mat = np.eye(self.R.shape[1]) * self.reg_alpha
+            self.coeff_ = scipy.linalg.solve(
+                self.R.T @ self.R + reg_mat, self.R.T @ self.QtY
+                )
         if self.coeff_.ndim == 2 and self.coeff_.shape[1] == 1:
             self.coeff_ = self.coeff_.ravel()
         return self
@@ -451,28 +444,26 @@ class GFDLClassifier(ClassifierMixin, GFDL):
 
         Notes
         -----
-        The design matrix is incrementally updated by persisting the gram matrix
-        (D.T @ D) and the moment vector (D.T @ y) for each batch, then adding
-        the gram and moment contributions of each new batch.
+        The design matrix D is never stored. Instead, the triangular factor R
+        of its QR decomposition (D = Q @ R) and Q.T @ y are persisted, and
+        updated with each new batch Dk by re-factoring the small stacked matrix::
 
-        For batches D = [D1, D2, ..., Dk].T::
+            [R; Dk] = Qk @ R_new
+            Q.T @ y  ->  Qk.T @ [Q.T @ y; yk]
 
-            [D1; D2; ...; Dk].T @ [D1; D2; ...; Dk] = sum_k(Dk.T @ Dk)
-            [D1; D2; ...; Dk].T @ [y1; y2; ...; yk] = sum_k(Dk.T @ yk)
-
-        This allows incremental accumulation.
+        This allows incremental accumulation without forming the gram matrix
+        (D.T @ D), which would square the condition number of D.
 
         The way we accumulate information across batches prevents us from using
         ``Ridge()`` as we do in full fit. In ``partial_fit()`` we never have access to
         the full design matrix, we only persist the aggregate quantities
-        ``D.T @ D``, ``D.T @ y``. Instead, for the regularized case, we directly solve
-        the system using ``scipy.linalg.solve(A + reg_mat, B)``, which is mathematically
-        equivalent to scikit-learn's ``Ridge(solver='cholesky')``.
+        ``R``, ``Q.T @ y``. Instead, for the regularized case, we directly solve
+        the system using ``scipy.linalg.solve(R.T @ R + reg_mat, R.T @ Q.T @ y)``,
+        which is mathematically equivalent to scikit-learn's
+        ``Ridge(solver='cholesky')``.
 
-        One other difference between full fit and partial fit arises in the direct
-        solve path. Because ``pinv()`` is acting on ``D.T @ D`` as opposed to just D,
-        the condition number is squared. This may require a lower ``rtol`` to maintain
-        numerical stability and avoid loss of information.
+        In the direct solve path, ``pinv()`` acts on ``R``, which has the same
+        singular values as D, so ``rtol`` has the same meaning as in full fit.
         """
         # shape: (n_samples, n_features)
         X, Y = validate_data(self, X, y, reset=not hasattr(self, "n_features_in_"))
@@ -662,9 +653,9 @@ class EnsembleGFDL(BaseEstimator):
         self.coeffs_ = []
         D = X
 
-        if not hasattr(self, "As"):
-            self.As = []
-            self.Bs = []
+        if not hasattr(self, "Rs"):
+            self.Rs = []
+            self.QtYs = []
 
         for i, (W, b) in enumerate(zip(self.W_, self.b_, strict=False)):
             Z = D @ W.T + b  # (n_samples, n_hidden_layer_i)
@@ -673,12 +664,13 @@ class EnsembleGFDL(BaseEstimator):
             # or (n_samples, n_hidden_final)
             D = np.hstack((H, X))
 
-            if len(self.As) == i:
-                self.As.append(np.zeros((D.shape[1], D.shape[1])))
-                self.Bs.append(np.zeros((D.shape[1], Y.shape[1])))
+            if len(self.Rs) == i:
+                self.Rs.append(np.zeros((0, D.shape[1])))
+                self.QtYs.append(np.zeros((0, Y.shape[1])))
 
-            self.As[i] += D.T @ D
-            self.Bs[i] += D.T @ Y
+            # incremental QR update, see GFDL.partial_fit
+            Q, self.Rs[i] = np.linalg.qr(np.vstack((self.Rs[i], D)))
+            self.QtYs[i] = Q.T @ np.vstack((self.QtYs[i], Y))
 
             # beta shape: (sum_hidden+n_features, n_classes-1)
             # or (sum_hidden, n_classes-1)
@@ -686,32 +678,18 @@ class EnsembleGFDL(BaseEstimator):
             # If reg_alpha is None, use direct solve using
             # MoorePenrose Pseudo-Inverse, otherwise use ridge regression.
 
-            # A = D.T @ D
-            # B = D.T @ y
-            # pinv(D) @ y = pinv(A)@B:
-            # pinv(D) @ y = (D.T @ D)^-1 @ D.T @ y
-
-            # pinv(A) @ B = pinv(D.T @ D) @ D.T @ y
-
-            # pinv(D.T @ D) @ D.T @ y
-            # = ((D.T @ D).T @ (D.T @ D))^-1 @ (D.T @ D).T @ D.T @ y
-            # = ((D.T @ D) @ (D.T @ D))^-1 @ (D.T @ D) @ D.T @ y
-            # = (D.T @ D)^-1 @ (D.T @ D)^-1 @ (D.T @ D) @ D.T @ y
-            # = (D.T @ D)^-1 @ D.T @ y
-
             if self.reg_alpha is None:
-                coef_ = np.linalg.pinv(self.As[i], rtol=self.rtol) @ self.Bs[i]
+                coef_ = np.linalg.pinv(self.Rs[i], rtol=self.rtol) @ self.QtYs[i]
             else:
-                # scipy.linalg.solve(self.A + reg_mat, self.B)
-                # is equivalent to
+                # scipy.linalg.solve(A + reg_mat, B), with A = D.T @ D
+                # and B = D.T @ y, is equivalent to
                 # ridge = Ridge(
                 #   alpha=self.reg_alpha, fit_intercept=False, solver='cholesky'
                 #   )
                 # ridge.fit(D_all[:current_batch], Y_all[:current_batch])
-                reg_mat = np.eye(
-                    self.As[i].shape[0], dtype=self.As[i].dtype
-                    ) * self.reg_alpha
-                coef_ = scipy.linalg.solve(self.As[i] + reg_mat, self.Bs[i])
+                R = self.Rs[i]
+                reg_mat = np.eye(R.shape[1], dtype=R.dtype) * self.reg_alpha
+                coef_ = scipy.linalg.solve(R.T @ R + reg_mat, R.T @ self.QtYs[i])
 
             self.coeffs_.append(coef_)
 
@@ -916,28 +894,26 @@ class EnsembleGFDLClassifier(ClassifierMixin, EnsembleGFDL):
 
         Notes
         -----
-        The design matrix is incrementally updated by persisting the gram matrix
-        (D.T @ D) and the moment vector (D.T @ y) for each batch, then adding
-        the gram and moment contributions of each new batch.
+        The design matrix D is never stored. Instead, the triangular factor R
+        of its QR decomposition (D = Q @ R) and Q.T @ y are persisted, and
+        updated with each new batch Dk by re-factoring the small stacked matrix::
 
-        For batches D = [D1, D2, ..., Dk].T::
+            [R; Dk] = Qk @ R_new
+            Q.T @ y  ->  Qk.T @ [Q.T @ y; yk]
 
-            [D1; D2; ...; Dk].T @ [D1; D2; ...; Dk] = sum_k(Dk.T @ Dk)
-            [D1; D2; ...; Dk].T @ [y1; y2; ...; yk] = sum_k(Dk.T @ yk)
-
-        This allows incremental accumulation.
+        This allows incremental accumulation without forming the gram matrix
+        (D.T @ D), which would square the condition number of D.
 
         The way we accumulate information across batches prevents us from using
         ``Ridge()`` as we do in full fit. In ``partial_fit()`` we never have access to
         the full design matrix, we only persist the aggregate quantities
-        ``D.T @ D``, ``D.T @ y``. Instead, for the regularized case, we directly solve
-        the system using ``scipy.linalg.solve(A + reg_mat, B)``, which is mathematically
-        equivalent to scikit-learn's ``Ridge(solver='cholesky')``.
+        ``R``, ``Q.T @ y``. Instead, for the regularized case, we directly solve
+        the system using ``scipy.linalg.solve(R.T @ R + reg_mat, R.T @ Q.T @ y)``,
+        which is mathematically equivalent to scikit-learn's
+        ``Ridge(solver='cholesky')``.
 
-        One other difference between full fit and partial fit arises in the direct
-        solve path. Because ``pinv()`` is acting on ``D.T @ D`` as opposed to just D,
-        the condition number is squared. This may require a lower ``rtol`` to maintain
-        numerical stability and avoid loss of information.
+        In the direct solve path, ``pinv()`` acts on ``R``, which has the same
+        singular values as D, so ``rtol`` has the same meaning as in full fit.
         """
         # shape: (n_samples, n_features)
         X, Y = validate_data(self, X, y, reset=not hasattr(self, "n_features_in_"))
@@ -1218,28 +1194,26 @@ class GFDLRegressor(RegressorMixin, MultiOutputMixin, GFDL):
 
         Notes
         -----
-        The design matrix is incrementally updated by persisting the gram matrix
-        (D.T @ D) and the moment vector (D.T @ y) for each batch, then adding
-        the gram and moment contributions of each new batch.
+        The design matrix D is never stored. Instead, the triangular factor R
+        of its QR decomposition (D = Q @ R) and Q.T @ y are persisted, and
+        updated with each new batch Dk by re-factoring the small stacked matrix::
 
-        For batches D = [D1, D2, ..., Dk].T::
+            [R; Dk] = Qk @ R_new
+            Q.T @ y  ->  Qk.T @ [Q.T @ y; yk]
 
-            [D1; D2; ...; Dk].T @ [D1; D2; ...; Dk] = sum_k(Dk.T @ Dk)
-            [D1; D2; ...; Dk].T @ [y1; y2; ...; yk] = sum_k(Dk.T @ yk)
-
-        This allows incremental accumulation.
+        This allows incremental accumulation without forming the gram matrix
+        (D.T @ D), which would square the condition number of D.
 
         The way we accumulate information across batches prevents us from using
         ``Ridge()`` as we do in full fit. In ``partial_fit()`` we never have access to
         the full design matrix, we only persist the aggregate quantities
-        ``D.T @ D``, ``D.T @ y``. Instead, for the regularized case, we directly solve
-        the system using ``scipy.linalg.solve(A + reg_mat, B)``, which is mathematically
-        equivalent to scikit-learn's ``Ridge(solver='cholesky')``.
+        ``R``, ``Q.T @ y``. Instead, for the regularized case, we directly solve
+        the system using ``scipy.linalg.solve(R.T @ R + reg_mat, R.T @ Q.T @ y)``,
+        which is mathematically equivalent to scikit-learn's
+        ``Ridge(solver='cholesky')``.
 
-        One other difference between full fit and partial fit arises in the direct
-        solve path. Because ``pinv()`` is acting on ``D.T @ D`` as opposed to just D,
-        the condition number is squared. This may require a lower ``rtol`` to maintain
-        numerical stability and avoid loss of information.
+        In the direct solve path, ``pinv()`` acts on ``R``, which has the same
+        singular values as D, so ``rtol`` has the same meaning as in full fit.
         """
         X, Y = validate_data(self, X, y, reset=not hasattr(self, "n_features_in_"))
         if Y.ndim == 1:
